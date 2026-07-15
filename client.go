@@ -41,8 +41,9 @@ type Client struct {
 	pCh     chan []byte
 	CloseCh chan struct{}
 
-	mu      sync.Mutex
-	started bool
+	mu        sync.Mutex
+	started   bool
+	closeOnce sync.Once
 }
 
 func NewClient(opts ...ClientOption) (*Client, error) {
@@ -188,12 +189,21 @@ func (c *Client) reportError(err error) {
 	}
 }
 
-func (c *Client) readPump() {
-	defer func() {
+// closeConn tears the connection down exactly once, however it's triggered —
+// a read failure, a write failure, or both racing each other. Without this,
+// a write failure alone would leave writePump exited but readPump still
+// blocked on a read that may never come, so ctx never gets canceled and
+// Send/outCh sends wouldn't fail fast.
+func (c *Client) closeConn() {
+	c.closeOnce.Do(func() {
 		c.cancel()
 		c.conn.Close()
 		close(c.CloseCh)
-	}()
+	})
+}
+
+func (c *Client) readPump() {
+	defer c.closeConn()
 
 	for {
 		_, message, err := c.conn.ReadMessage()
@@ -246,7 +256,11 @@ func (c *Client) readPump() {
 			break
 		}
 
-		c.outCh <- outBytes
+		select {
+		case c.outCh <- outBytes:
+		case <-c.ctx.Done():
+			return
+		}
 	}
 }
 
@@ -260,20 +274,24 @@ func (c *Client) writePump() {
 			w, err := c.conn.NextWriter(websocket.TextMessage)
 			if err != nil {
 				c.reportError(err)
+				c.closeConn()
 				return
 			}
 			if _, err = w.Write(msg); err != nil {
 				c.reportError(err)
+				c.closeConn()
 				return
 			}
 			if err = w.Close(); err != nil {
 				c.reportError(err)
+				c.closeConn()
 				return
 			}
 
 		case <-c.pCh:
 			if err := c.conn.WriteMessage(websocket.PongMessage, nil); err != nil {
 				c.reportError(err)
+				c.closeConn()
 				return
 			}
 		}

@@ -29,6 +29,8 @@ type Session struct {
 	sendTimeout  time.Duration
 	pendingCalls sync.Map
 	pendingCnt   atomic.Int32
+
+	closeOnce sync.Once
 }
 
 // ID returns the session's connection id.
@@ -80,12 +82,21 @@ func (s *Session) Send(action string, data any) (*protocol.Message, error) {
 	}
 }
 
-func (s *Session) readPump(srv *Server) {
-	defer func() {
+// closeConn tears the connection down exactly once, however it's triggered —
+// a read failure, a write failure, or both racing each other. Without this,
+// a write failure alone would leave writePump exited but readPump still
+// blocked on a read that may never come, so done never fires and
+// Send/outCh sends wouldn't fail fast.
+func (s *Session) closeConn(srv *Server) {
+	s.closeOnce.Do(func() {
 		s.conn.Close()
 		close(s.done)
 		srv.delete(s.id)
-	}()
+	})
+}
+
+func (s *Session) readPump(srv *Server) {
+	defer s.closeConn(srv)
 
 	for {
 		_, message, err := s.conn.ReadMessage()
@@ -138,7 +149,11 @@ func (s *Session) readPump(srv *Server) {
 			break
 		}
 
-		s.outCh <- outBytes
+		select {
+		case s.outCh <- outBytes:
+		case <-s.done:
+			return
+		}
 
 		if srv.onActivity != nil {
 			srv.onActivity(s)
@@ -157,20 +172,24 @@ func (s *Session) writePump(srv *Server) {
 			w, err := s.conn.NextWriter(websocket.TextMessage)
 			if err != nil {
 				srv.reportError(err)
+				s.closeConn(srv)
 				return
 			}
 			if _, err = w.Write(msg); err != nil {
 				srv.reportError(err)
+				s.closeConn(srv)
 				return
 			}
 			if err = w.Close(); err != nil {
 				srv.reportError(err)
+				s.closeConn(srv)
 				return
 			}
 
 		case <-s.pTicker.C:
 			if err := s.conn.WriteMessage(websocket.PingMessage, []byte{}); err != nil {
 				srv.reportError(err)
+				s.closeConn(srv)
 				return
 			}
 		}
