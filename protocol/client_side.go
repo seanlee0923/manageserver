@@ -1,0 +1,100 @@
+package protocol
+
+type LoginReq struct {
+	Id       string `json:"id"`
+	Password string `json:"password"`
+}
+
+type HeartBeatReq struct {
+}
+
+type PcStatusReq struct {
+	CpuUsage      float64         `json:"cpu_usage"`
+	CpuCores      int             `json:"cpu_cores"`
+	MemTotal      float64         `json:"mem_total"`
+	MemUsage      float64         `json:"mem_usage"`
+	MemPercent    float64         `json:"mem_percent"`
+	DiskTotal     float64         `json:"disk_total"`
+	DiskUsage     float64         `json:"disk_usage"`
+	DiskPercent   float64         `json:"disk_percent"`
+	PacketIn      uint64          `json:"packet_in"`
+	PacketOut     uint64          `json:"packet_out"`
+	DropIn        uint64          `json:"drop_in"`
+	DropOut       uint64          `json:"drop_out"`
+	ErrIn         uint64          `json:"err_in"`
+	ErrOut        uint64          `json:"err_out"`
+	ContainerList []ContainerInfo `json:"container_list"`
+	ServerTime    string          `json:"st"`
+}
+
+type ServerInfoReq struct {
+	AnydeskId      string            `json:"anydesk_id"`
+	ServiceVersion map[string]string `json:"svc_version"`
+}
+
+type ContainerInfo struct {
+	Service string `json:"Service"`
+	State   string `json:"State"`
+	Status  string `json:"Status"`
+}
+
+type ChargePointSyncReq struct {
+	ChargePointList []ChargePointDetail `json:"cp_list"`
+	ServerTime      string              `json:"st"`
+}
+
+type ChargePointStatusReq struct {
+	ChargePointList []ChargePointStat `json:"cp_list"`
+	ServerTime      string            `json:"st"`
+}
+
+type ChargePointBootSummaryReq struct {
+	ChargePointList []ChargePointBootCnt `json:"cp_list"`
+	ServerTime      string               `json:"st"`
+}
+
+type ChargePointDetail struct {
+	Serial          string `json:"s"`
+	FirmwareVersion string `json:"fver"`
+	IpAddr          string `json:"ip_addr"`
+	ChargeAreaName  string `json:"ca_name"`
+	ChargePointName string `json:"cp_name"`
+}
+
+type ChargePointStat struct {
+	Serial               string `json:"s"`
+	LastStatus           string `json:"ls"`
+	LastStatusDetail     string `json:"lsd"`
+	LastStatusTimestamp  string `json:"lst"`
+	LastDisconnectedTime string `json:"ldct"`
+}
+
+type ChargePointBootCnt struct {
+	Serial string `json:"s"`
+	Count  int    `json:"c"`
+}
+
+type ChargeRecordStatusReq struct {
+	NegativeCnt        int              `json:"ne_cnt"`
+	HighUsageCnt       int              `json:"high_cnt"`
+	AbnormalRecordList []AbnormalRecord `json:"ab_record"`
+}
+
+type AbnormalRecord struct {
+	TransactionId     int    `json:"trId"`
+	ChargeAreaName    string `json:"caname"`
+	ChargePointName   string `json:"cpname"`
+	ChargePointSerial string `json:"cpid"`
+	ChargeStDate      string `json:"stdate"`
+	ChargeEndDate     string `json:"endate"`
+	Usage             string `json:"usage"`
+}
+
+type FileUploadResp struct {
+	Status string `json:"st"`
+}
+
+type BootNotificationCntResp struct {
+	ChargePointId string `json:"charge_point_id"`
+	PeriodBootCnt int    `json:"period_boot_cnt"`
+}

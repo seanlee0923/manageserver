@@ -1,0 +1,182 @@
+package manageserver
+
+import (
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/gorilla/websocket"
+)
+
+// Server accepts websocket connections from Clients and dispatches
+// incoming requests to registered ServerHandlers. It has no knowledge of
+// any particular application's storage — authentication and per-connection
+// bookkeeping are wired in via WithAuthFunc / WithOnConnect / WithOnDisconnect
+// / WithOnActivity.
+type Server struct {
+	addr     string
+	certFile string
+	keyFile  string
+
+	u websocket.Upgrader
+
+	sendTimeout time.Duration
+
+	authFunc     func(id string) (any, bool)
+	onConnect    func(*Session)
+	onDisconnect func(*Session)
+	onActivity   func(*Session)
+	onError      func(error)
+
+	mu      sync.Mutex
+	h       map[string]ServerHandler
+	clients map[string]*Session
+}
+
+func NewServer(opts ...ServerOption) (*Server, error) {
+	s := &Server{
+		addr: "0.0.0.0:8080",
+		u: websocket.Upgrader{
+			Subprotocols: []string{},
+		},
+		sendTimeout: 60 * time.Second,
+		h:           make(map[string]ServerHandler),
+		clients:     make(map[string]*Session),
+	}
+
+	for _, opt := range opts {
+		if err := opt(s); err != nil {
+			return nil, err
+		}
+	}
+
+	return s, nil
+}
+
+// On registers a handler for messages with the given action name.
+func (s *Server) On(action string, handler ServerHandler) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.h[action] = handler
+}
+
+func (s *Server) getHandler(action string) ServerHandler {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.h[action]
+}
+
+// Get returns the currently connected session for id, if any.
+func (s *Server) Get(id string) (*Session, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.clients[id]
+	return sess, ok
+}
+
+func (s *Server) delete(id string) {
+	s.mu.Lock()
+	sess, ok := s.clients[id]
+	if ok {
+		delete(s.clients, id)
+	}
+	s.mu.Unlock()
+
+	if ok && s.onDisconnect != nil {
+		go s.onDisconnect(sess)
+	}
+}
+
+func (s *Server) reportError(err error) {
+	if s.onError != nil {
+		s.onError(err)
+	}
+}
+
+// Run starts serving on the configured address (WithPort) at path (e.g.
+// "/ws/", defaults to "/ws/" if empty) and blocks. If WithTLS was
+// configured it serves wss://, otherwise plain ws://.
+func (s *Server) Run(path string) error {
+	p := normalizePath(path)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc(p, func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, p)
+		if id == "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+
+		var data any
+		if s.authFunc != nil {
+			var ok bool
+			data, ok = s.authFunc(id)
+			if !ok {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+		}
+
+		// Fast pre-check to avoid upgrading an obviously-duplicate
+		// connection; the authoritative check happens atomically in
+		// registerSession after the (slow) upgrade completes below.
+		if _, exists := s.Get(id); exists {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+
+		conn, err := s.u.Upgrade(w, r, nil)
+		if err != nil {
+			s.reportError(err)
+			return
+		}
+
+		sess := &Session{
+			id:            id,
+			PersistenceID: data,
+			conn:          conn,
+			outCh:         make(chan []byte),
+			done:          make(chan struct{}),
+			pTicker:       time.NewTicker(2 * time.Minute),
+			sendTimeout:   s.sendTimeout,
+		}
+
+		if !s.registerSession(sess) {
+			// Someone else registered this id while we were upgrading.
+			conn.Close()
+			return
+		}
+
+		conn.SetPongHandler(func(string) error { return nil })
+
+		go sess.readPump(s)
+		go sess.writePump(s)
+
+		if s.onConnect != nil {
+			go s.onConnect(sess)
+		}
+	})
+
+	if s.certFile != "" && s.keyFile != "" {
+		return http.ListenAndServeTLS(s.addr, s.certFile, s.keyFile, mux)
+	}
+
+	return http.ListenAndServe(s.addr, mux)
+}
+
+// registerSession atomically checks for and inserts a session under one
+// lock, closing the TOCTOU window between the pre-check in Run and the
+// insert (two concurrent connects for the same id could otherwise both
+// pass the pre-check and the second addition would silently clobber the
+// first, leaking its socket and goroutines).
+func (s *Server) registerSession(sess *Session) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.clients[sess.id]; exists {
+		return false
+	}
+	s.clients[sess.id] = sess
+	return true
+}
