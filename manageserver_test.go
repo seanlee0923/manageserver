@@ -226,6 +226,89 @@ func TestSendFailsFastAfterClose(t *testing.T) {
 	}
 }
 
+func TestHMACRequestValidatorAcceptsCorrectSecret(t *testing.T) {
+	srv, addr := startServer(t, manageserver.WithRequestValidator(
+		manageserver.HMACRequestValidator(func(id string) (string, bool) {
+			if id != "site-1" {
+				return "", false
+			}
+			return "shared-secret", true
+		}, 0),
+	))
+
+	c, err := manageserver.NewClient(manageserver.WithID("site-1"), manageserver.WithHMACAuth("shared-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = c.Start(addr, "/ws/") }()
+	waitForSession(t, srv, "site-1")
+}
+
+func TestHMACRequestValidatorRejectsWrongSecret(t *testing.T) {
+	_, addr := startServer(t, manageserver.WithRequestValidator(
+		manageserver.HMACRequestValidator(func(id string) (string, bool) {
+			return "shared-secret", true
+		}, 0),
+	))
+
+	c, err := manageserver.NewClient(manageserver.WithID("site-1"), manageserver.WithHMACAuth("wrong-secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Start(addr, "/ws/"); err == nil {
+		t.Fatal("expected connection with wrong HMAC secret to be rejected")
+	}
+}
+
+func TestHMACRequestValidatorRejectsMissingSignature(t *testing.T) {
+	_, addr := startServer(t, manageserver.WithRequestValidator(
+		manageserver.HMACRequestValidator(func(id string) (string, bool) {
+			return "shared-secret", true
+		}, 0),
+	))
+
+	// No WithHMACAuth on the client at all — no signature headers sent.
+	c, err := manageserver.NewClient(manageserver.WithID("site-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Start(addr, "/ws/"); err == nil {
+		t.Fatal("expected connection with no HMAC signature to be rejected")
+	}
+}
+
+func TestHMACRequestValidatorRejectsUnknownID(t *testing.T) {
+	_, addr := startServer(t, manageserver.WithRequestValidator(
+		manageserver.HMACRequestValidator(func(id string) (string, bool) {
+			return "", false // unknown id, no secret provisioned
+		}, 0),
+	))
+
+	c, err := manageserver.NewClient(manageserver.WithID("unknown-site"), manageserver.WithHMACAuth("whatever"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Start(addr, "/ws/"); err == nil {
+		t.Fatal("expected connection for an id with no provisioned secret to be rejected")
+	}
+}
+
+// TestWithAuthFuncUnaffectedByRequestValidator guards the design intent that
+// WithRequestValidator is fully independent of WithAuthFunc: setting only
+// WithAuthFunc (no validator) must keep behaving exactly as before.
+func TestWithAuthFuncUnaffectedByRequestValidator(t *testing.T) {
+	srv, addr := startServer(t, manageserver.WithAuthFunc(func(id string) (any, bool) {
+		return nil, id == "allowed"
+	}))
+
+	c, err := manageserver.NewClient(manageserver.WithID("allowed"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = c.Start(addr, "/ws/") }()
+	waitForSession(t, srv, "allowed")
+}
+
 func TestCustomPath(t *testing.T) {
 	port := freePort(t)
 	s, err := manageserver.NewServer(manageserver.WithPort(port))

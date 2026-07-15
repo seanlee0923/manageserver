@@ -20,6 +20,19 @@ func WithID(id string) ClientOption {
 	}
 }
 
+// WithHMACAuth signs the connection handshake with an HMAC-SHA256 signature
+// over the client id, a fresh nonce and the current time, using secret. The
+// signature is sent as request headers on the websocket upgrade and checked
+// server-side by HMACRequestValidator (see hmac.go) or a custom
+// WithRequestValidator func — servers that don't opt into either simply
+// ignore the headers.
+func WithHMACAuth(secret string) ClientOption {
+	return func(c *Client) error {
+		c.hmacSecret = secret
+		return nil
+	}
+}
+
 // WithRequestTimeout overrides how long Send waits for a response before
 // giving up (default 30 minutes).
 func WithRequestTimeout(d time.Duration) ClientOption {

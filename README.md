@@ -76,9 +76,37 @@ err = c.Start("wss://central.example.com:8383", "/ws/")
 
 ## 주요 옵션
 
-**Server**: `WithPort`, `WithTLS(cert, key)`, `WithAuthFunc`, `WithOnConnect`, `WithOnDisconnect`, `WithOnActivity`, `WithOnError`, `WithSendTimeout`
+**Server**: `WithPort`, `WithTLS(cert, key)`, `WithAuthFunc`, `WithRequestValidator`, `WithOnConnect`, `WithOnDisconnect`, `WithOnActivity`, `WithOnError`, `WithSendTimeout`
 
-**Client**: `WithID`(필수), `WithTLSConfig`, `WithRootCAFile`, `WithInsecureSkipVerify`, `WithConnectHandler`, `WithErrorHandler`, `WithRequestTimeout`
+**Client**: `WithID`(필수), `WithTLSConfig`, `WithRootCAFile`, `WithInsecureSkipVerify`, `WithHMACAuth`, `WithConnectHandler`, `WithErrorHandler`, `WithRequestTimeout`
+
+## id만으로는 부족한 인증이 필요할 때 (WithRequestValidator)
+
+`WithAuthFunc`는 연결 id만 보고 허용 여부를 정합니다. `id`(예: 사이트 코드)를 아는 사람이면 누구나 그 이름으로 접속을 시도할 수 있다는 뜻이라, 그걸로는 부족하면 `WithRequestValidator`를 얹어 쓰세요. `WithAuthFunc`와 완전히 독립적인 별도 옵션이라, 안 쓰면 기존 동작은 그대로입니다.
+
+가장 흔한 경우(현장별 공유 secret으로 HMAC 서명)는 바로 쓸 수 있는 헬퍼가 있습니다:
+
+```go
+// 서버
+manageserver.WithRequestValidator(manageserver.HMACRequestValidator(
+    func(id string) (secret string, ok bool) {
+        var site model.Site
+        db.Where("code = ?", id).Find(&site)
+        if site.ID == 0 || site.Secret == "" {
+            return "", false
+        }
+        return site.Secret, true
+    },
+    0, // 0이면 manageserver.DefaultHMACMaxSkew(5분) 사용
+))
+
+// 클라이언트
+manageserver.WithHMACAuth(siteSecret)
+```
+
+bearer token이나 mTLS 클라이언트 인증서 검사처럼 다른 방식이 필요하면 `HMACRequestValidator` 대신 직접 `func(r *http.Request, id string) bool`을 작성해서 `WithRequestValidator`에 넘기면 됩니다. `VerifyHMACRequest`가 별도로 export돼 있어서, 그 안에서 HMAC 체크를 다른 검증과 조합하는 것도 가능합니다.
+
+> **주의**: `HMACRequestValidator`/`VerifyHMACRequest`는 타임스탬프 스큐(기본 5분)로만 replay를 제한합니다. nonce를 별도로 저장해서 재사용을 완전히 막지는 않습니다(그 저장소를 어디에 둘지는 애플리케이션마다 다르므로 manageserver가 강제하지 않음). 다만 서버가 이미 동일 id의 중복 연결을 거부하므로, 정상 클라이언트가 연결돼 있는 동안은 캡처된 서명을 재생해도 거부됩니다.
 
 ## 테스트
 

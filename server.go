@@ -23,8 +23,9 @@ type Server struct {
 
 	sendTimeout time.Duration
 
-	authFunc     func(id string) (any, bool)
-	onConnect    func(*Session)
+	requestValidator func(r *http.Request, id string) bool
+	authFunc         func(id string) (any, bool)
+	onConnect        func(*Session)
 	onDisconnect func(*Session)
 	onActivity   func(*Session)
 	onError      func(error)
@@ -104,6 +105,11 @@ func (s *Server) Run(path string) error {
 	mux.HandleFunc(p, func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.URL.Path, p)
 		if id == "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+
+		if s.requestValidator != nil && !s.requestValidator(r, id) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}

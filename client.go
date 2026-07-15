@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,6 +26,7 @@ type Client struct {
 
 	tlsConfig   *tls.Config
 	sendTimeout time.Duration
+	hmacSecret  string
 
 	onError   func(error)
 	onConnect func(*Client)
@@ -118,7 +120,14 @@ func (c *Client) Start(serverAddr, path string) error {
 	c.mu.Unlock()
 
 	urlStr := serverAddr + normalizePath(path) + c.id
-	conn, _, err := c.dialer.Dial(urlStr, nil)
+
+	var header http.Header
+	if c.hmacSecret != "" {
+		header = http.Header{}
+		signHMACRequest(header, c.id, c.hmacSecret, uuid.NewString(), time.Now())
+	}
+
+	conn, _, err := c.dialer.Dial(urlStr, header)
 	if err != nil {
 		return err
 	}

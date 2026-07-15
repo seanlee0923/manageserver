@@ -1,6 +1,7 @@
 package manageserver
 
 import (
+	"net/http"
 	"strings"
 	"time"
 )
@@ -33,6 +34,23 @@ func WithTLS(certFile, keyFile string) ServerOption {
 func WithAuthFunc(f func(id string) (persistenceID any, ok bool)) ServerOption {
 	return func(s *Server) error {
 		s.authFunc = f
+		return nil
+	}
+}
+
+// WithRequestValidator registers an optional pre-check that runs against the
+// raw incoming request before authFunc, for checks that need more than just
+// the connection id — header-based signatures, bearer tokens, mTLS client
+// cert inspection, and the like. Returning false rejects the connection with
+// 401 before authFunc is even called. Independent of and unrelated to
+// WithAuthFunc; leave unset and nothing changes.
+//
+// manageserver ships one ready-made validator for the common shared-secret
+// case, HMACRequestValidator (see hmac.go) — pass its result here, or write
+// your own func(r *http.Request, id string) bool for anything else.
+func WithRequestValidator(f func(r *http.Request, id string) bool) ServerOption {
+	return func(s *Server) error {
+		s.requestValidator = f
 		return nil
 	}
 }
