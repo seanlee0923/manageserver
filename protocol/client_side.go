@@ -90,6 +90,24 @@ type AbnormalRecord struct {
 	Usage             string `json:"usage"`
 }
 
+// RecordAlertReq carries only newly-detected abnormal charge records for the
+// fast, event-driven "RecordAlert" action. Unlike ChargeRecordStatusReq (the
+// long-duration full sync, which also reports site-wide totals), this is
+// alert-only: a non-empty list means "something new just happened", so it
+// carries no NegativeCnt/HighUsageCnt totals — those would be misleading
+// here since this payload is a delta, not the full current count.
+type RecordAlertReq struct {
+	AbnormalRecordList []AbnormalRecord `json:"ab_record"`
+}
+
+// BootAlertReq carries only the charge points that newly crossed the reboot
+// alert threshold, for the fast, event-driven "BootAlert" action. Unlike
+// ChargePointBootSummaryReq (the long-duration full sync), this is
+// alert-only and carries no ServerTime/full-list semantics.
+type BootAlertReq struct {
+	ChargePointList []ChargePointBootCnt `json:"cp_list"`
+}
+
 type FileUploadResp struct {
 	Status string `json:"st"`
 }
