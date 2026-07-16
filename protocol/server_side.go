@@ -13,14 +13,16 @@ type HeartBeatResp struct {
 	Ok bool `json:"ok"`
 }
 
+// FileUploadReq asks a site to download a file to local disk. This is
+// transfer-only — it carries no deploy instructions (no service name,
+// version, or file type/target selector). What a site does with a
+// transferred file is a separate, not-yet-introduced command's concern.
 type FileUploadReq struct {
-	FileId      int    `json:"file_id"`
-	FileName    string `json:"file_name"`
-	FileSize    int64  `json:"file_size"`
-	AllowKey    string `json:"allow_key"`
-	FileType    string `json:"file_type"`
-	ServiceName string `json:"service_name"`
-	Version     string `json:"version"`
+	CommandId string `json:"command_id"`
+	FileId    int    `json:"file_id"`
+	FileName  string `json:"file_name"`
+	FileSize  int64  `json:"file_size"`
+	AllowKey  string `json:"allow_key"`
 }
 
 type TickerConfigReq struct {
