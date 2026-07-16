@@ -578,3 +578,131 @@ func TestServerCloseSessionUnknownID(t *testing.T) {
 		t.Fatal("expected an error for an unknown session id")
 	}
 }
+
+// TestSessionNotifyDeliversWithoutResponse guards the core Notify contract
+// from the server side: the client handler must receive it, and Notify must
+// not register a pending call (Pending stays 0, no Resp round trip happens).
+func TestSessionNotifyDeliversWithoutResponse(t *testing.T) {
+	srv, addr := startServer(t)
+
+	received := make(chan string, 1)
+	c, err := manageserver.NewClient(manageserver.WithID("device-notify-from-server"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.On("Chunk", func(cl *manageserver.Client, msg *protocol.Message) any {
+		var payload map[string]string
+		if err := json.Unmarshal(msg.Data, &payload); err != nil {
+			t.Error(err)
+		}
+		received <- payload["data"]
+		// Notify handlers may return whatever they like — it must be ignored,
+		// not sent back as a Resp and not treated as "nil means disconnect".
+		return "this should never be sent anywhere"
+	})
+
+	go func() { _ = c.Start(addr, "/ws/") }()
+	waitForSession(t, srv, "device-notify-from-server")
+
+	sess, ok := srv.Get("device-notify-from-server")
+	if !ok {
+		t.Fatal("expected session to be registered")
+	}
+
+	if err := sess.Notify("Chunk", map[string]string{"data": "hello"}); err != nil {
+		t.Fatalf("Notify failed: %v", err)
+	}
+
+	select {
+	case payload := <-received:
+		if payload != "hello" {
+			t.Fatalf("unexpected payload: %q", payload)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for client to receive the notify")
+	}
+
+	if got := sess.Pending(); got != 0 {
+		t.Fatalf("expected Pending()==0 after Notify (it must not register a pending call), got %d", got)
+	}
+}
+
+// TestClientNotifyDeliversWithoutResponse mirrors
+// TestSessionNotifyDeliversWithoutResponse from the client side.
+func TestClientNotifyDeliversWithoutResponse(t *testing.T) {
+	srv, addr := startServer(t)
+
+	received := make(chan string, 1)
+	srv.On("Chunk", func(sess *manageserver.Session, msg *protocol.Message) any {
+		var payload map[string]string
+		if err := json.Unmarshal(msg.Data, &payload); err != nil {
+			t.Error(err)
+		}
+		received <- payload["data"]
+		return "this should never be sent anywhere"
+	})
+
+	c, err := manageserver.NewClient(manageserver.WithID("device-notify-from-client"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = c.Start(addr, "/ws/") }()
+	waitForSession(t, srv, "device-notify-from-client")
+
+	if err := c.Notify("Chunk", map[string]string{"data": "hello"}); err != nil {
+		t.Fatalf("Notify failed: %v", err)
+	}
+
+	select {
+	case payload := <-received:
+		if payload != "hello" {
+			t.Fatalf("unexpected payload: %q", payload)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for server to receive the notify")
+	}
+
+	if got := c.Pending(); got != 0 {
+		t.Fatalf("expected Pending()==0 after Notify (it must not register a pending call), got %d", got)
+	}
+}
+
+// TestNotifyNilHandlerReturnDoesNotCloseConnection guards the key difference
+// from Req dispatch: for a Req, a nil handler return closes the connection.
+// A Notify handler returning nil must not — it's a fire-and-forget message,
+// not a "hang up" signal.
+func TestNotifyNilHandlerReturnDoesNotCloseConnection(t *testing.T) {
+	srv, addr := startServer(t)
+
+	notified := make(chan struct{}, 1)
+	srv.On("SilentChunk", func(sess *manageserver.Session, msg *protocol.Message) any {
+		notified <- struct{}{}
+		return nil
+	})
+	srv.On("Ping", func(sess *manageserver.Session, msg *protocol.Message) any {
+		return protocol.StatusResp{Ok: true}
+	})
+
+	c, err := manageserver.NewClient(manageserver.WithID("device-notify-nil-return"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = c.Start(addr, "/ws/") }()
+	waitForSession(t, srv, "device-notify-nil-return")
+
+	if err := c.Notify("SilentChunk", map[string]string{}); err != nil {
+		t.Fatalf("Notify failed: %v", err)
+	}
+
+	select {
+	case <-notified:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the notify to be delivered")
+	}
+
+	// If a nil Notify return had (wrongly) closed the connection, this
+	// subsequent Send would fail instead of round-tripping normally.
+	if _, err := c.Send("Ping", map[string]string{}); err != nil {
+		t.Fatalf("expected connection to still be alive after a nil-returning Notify handler, got: %v", err)
+	}
+}

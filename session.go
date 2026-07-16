@@ -104,6 +104,36 @@ func (s *Session) Send(action string, data any) (*protocol.Message, error) {
 	}
 }
 
+// Notify sends a fire-and-forget message to this client: unlike Send, it
+// does not wait for (or expect) a matching response. Intended for streaming
+// payloads (e.g. terminal I/O chunks) where a full request/response round
+// trip per message would be unnecessary overhead.
+func (s *Session) Notify(action string, data any) error {
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+
+	msg := &protocol.Message{
+		Id:     uuid.NewString(),
+		Type:   protocol.Notify,
+		Action: action,
+		Data:   raw,
+	}
+
+	msgBytes, err := msg.ToBytes()
+	if err != nil {
+		return err
+	}
+
+	select {
+	case s.outCh <- msgBytes:
+		return nil
+	case <-s.done:
+		return errors.New("manageserver: connection closed")
+	}
+}
+
 // closeConn tears the connection down exactly once, however it's triggered —
 // a read failure, a write failure, or both racing each other. Without this,
 // a write failure alone would leave writePump exited but readPump still
@@ -144,6 +174,14 @@ func (s *Session) readPump(srv *Server) {
 
 		h := srv.getHandler(msg.Action)
 		if h == nil {
+			continue
+		}
+
+		if msg.Type == protocol.Notify {
+			h(s, msg)
+			if srv.onActivity != nil {
+				srv.onActivity(s)
+			}
 			continue
 		}
 

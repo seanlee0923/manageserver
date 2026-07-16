@@ -227,6 +227,37 @@ func (c *Client) Send(action string, data any) (*protocol.Message, error) {
 	}
 }
 
+// Notify sends a fire-and-forget message: unlike Send, it does not wait for
+// (or expect) a matching response. Intended for streaming payloads (e.g.
+// terminal I/O chunks) where a full request/response round trip per message
+// would be unnecessary overhead. Returns once the message is handed off to
+// the write pump, or immediately if the connection is already closed.
+func (c *Client) Notify(action string, data any) error {
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+
+	msg := &protocol.Message{
+		Id:     uuid.NewString(),
+		Type:   protocol.Notify,
+		Action: action,
+		Data:   raw,
+	}
+
+	msgBytes, err := msg.ToBytes()
+	if err != nil {
+		return err
+	}
+
+	select {
+	case c.outCh <- msgBytes:
+		return nil
+	case <-c.ctx.Done():
+		return errors.New("manageserver: connection closed")
+	}
+}
+
 func (c *Client) reportError(err error) {
 	if c.onError != nil {
 		c.onError(err)
@@ -273,6 +304,11 @@ func (c *Client) readPump() {
 
 		h := c.h[msg.Action]
 		if h == nil {
+			continue
+		}
+
+		if msg.Type == protocol.Notify {
+			h(c, msg)
 			continue
 		}
 
