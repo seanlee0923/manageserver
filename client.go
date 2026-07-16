@@ -24,12 +24,16 @@ type Client struct {
 	conn   *websocket.Conn
 	dialer *websocket.Dialer
 
-	tlsConfig   *tls.Config
-	sendTimeout time.Duration
-	hmacSecret  string
+	tlsConfig    *tls.Config
+	sendTimeout  time.Duration
+	readTimeout  time.Duration
+	writeTimeout time.Duration
+	readLimit    int64
+	hmacSecret   string
 
 	onError   func(error)
 	onConnect func(*Client)
+	onPing    func(*Client)
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -51,12 +55,15 @@ type Client struct {
 
 func NewClient(opts ...ClientOption) (*Client, error) {
 	c := &Client{
-		h:           make(map[string]ClientHandler),
-		outCh:       make(chan []byte),
-		pCh:         make(chan []byte),
-		CloseCh:     make(chan struct{}),
-		pendingDone: make(chan struct{}, 1),
-		sendTimeout: 30 * time.Minute,
+		h:            make(map[string]ClientHandler),
+		outCh:        make(chan []byte),
+		pCh:          make(chan []byte),
+		CloseCh:      make(chan struct{}),
+		pendingDone:  make(chan struct{}, 1),
+		sendTimeout:  30 * time.Minute,
+		readTimeout:  5 * time.Minute,
+		writeTimeout: 30 * time.Second,
+		readLimit:    4 * 1024 * 1024,
 	}
 	// Valid from construction (not just after Start succeeds) so Context()
 	// and the ctx.Done() cases in Send/writePump never see a nil context.
@@ -163,8 +170,17 @@ func (c *Client) Start(serverAddr, path string) error {
 		return err
 	}
 
+	conn.SetReadLimit(c.readLimit)
+	conn.SetReadDeadline(time.Now().Add(c.readTimeout))
 	conn.SetPingHandler(func(appData string) error {
-		c.pCh <- []byte("")
+		conn.SetReadDeadline(time.Now().Add(c.readTimeout))
+		if c.onPing != nil {
+			c.onPing(c)
+		}
+		select {
+		case c.pCh <- []byte(""):
+		case <-c.ctx.Done():
+		}
 		return nil
 	})
 	c.mu.Lock()
@@ -286,6 +302,7 @@ func (c *Client) readPump() {
 			c.reportError(err)
 			return
 		}
+		c.conn.SetReadDeadline(time.Now().Add(c.readTimeout))
 
 		msg, err := protocol.ToMessage(message)
 		if err != nil {
@@ -351,6 +368,7 @@ func (c *Client) writePump() {
 			return
 
 		case msg := <-c.outCh:
+			c.conn.SetWriteDeadline(time.Now().Add(c.writeTimeout))
 			w, err := c.conn.NextWriter(websocket.TextMessage)
 			if err != nil {
 				c.reportError(err)
@@ -369,6 +387,7 @@ func (c *Client) writePump() {
 			}
 
 		case <-c.pCh:
+			c.conn.SetWriteDeadline(time.Now().Add(c.writeTimeout))
 			if err := c.conn.WriteMessage(websocket.PongMessage, nil); err != nil {
 				c.reportError(err)
 				c.closeConn()

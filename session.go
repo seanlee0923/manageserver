@@ -28,6 +28,8 @@ type Session struct {
 	done    chan struct{}
 
 	sendTimeout  time.Duration
+	readTimeout  time.Duration
+	writeTimeout time.Duration
 	pendingCalls sync.Map
 	pendingCnt   atomic.Int32
 	pendingDone  chan struct{}
@@ -156,6 +158,7 @@ func (s *Session) readPump(srv *Server) {
 			srv.reportError(err)
 			return
 		}
+		s.conn.SetReadDeadline(time.Now().Add(s.readTimeout))
 
 		msg, err := protocol.ToMessage(message)
 		if err != nil {
@@ -229,6 +232,7 @@ func (s *Session) writePump(srv *Server) {
 			return
 
 		case msg := <-s.outCh:
+			s.conn.SetWriteDeadline(time.Now().Add(s.writeTimeout))
 			w, err := s.conn.NextWriter(websocket.TextMessage)
 			if err != nil {
 				srv.reportError(err)
@@ -247,6 +251,7 @@ func (s *Session) writePump(srv *Server) {
 			}
 
 		case <-s.pTicker.C:
+			s.conn.SetWriteDeadline(time.Now().Add(s.writeTimeout))
 			if err := s.conn.WriteMessage(websocket.PingMessage, []byte{}); err != nil {
 				srv.reportError(err)
 				s.closeConn(srv)

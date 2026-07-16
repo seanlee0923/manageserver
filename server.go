@@ -23,14 +23,19 @@ type Server struct {
 
 	u websocket.Upgrader
 
-	sendTimeout time.Duration
+	sendTimeout  time.Duration
+	readTimeout  time.Duration
+	writeTimeout time.Duration
+	pingInterval time.Duration
+	readLimit    int64
 
 	requestValidator func(r *http.Request, id string) bool
 	authFunc         func(id string) (any, bool)
 	onConnect        func(*Session)
-	onDisconnect func(*Session)
-	onActivity   func(*Session)
-	onError      func(error)
+	onDisconnect     func(*Session)
+	onActivity       func(*Session)
+	onPong           func(*Session)
+	onError          func(error)
 
 	mu      sync.Mutex
 	h       map[string]ServerHandler
@@ -43,9 +48,13 @@ func NewServer(opts ...ServerOption) (*Server, error) {
 		u: websocket.Upgrader{
 			Subprotocols: []string{},
 		},
-		sendTimeout: 60 * time.Second,
-		h:           make(map[string]ServerHandler),
-		clients:     make(map[string]*Session),
+		sendTimeout:  60 * time.Second,
+		readTimeout:  5 * time.Minute,
+		writeTimeout: 30 * time.Second,
+		pingInterval: 2 * time.Minute,
+		readLimit:    4 * 1024 * 1024,
+		h:            make(map[string]ServerHandler),
+		clients:      make(map[string]*Session),
 	}
 
 	for _, opt := range opts {
@@ -161,8 +170,10 @@ func (s *Server) Run(path string) error {
 			outCh:         make(chan []byte),
 			done:          make(chan struct{}),
 			pendingDone:   make(chan struct{}, 1),
-			pTicker:       time.NewTicker(2 * time.Minute),
+			pTicker:       time.NewTicker(s.pingInterval),
 			sendTimeout:   s.sendTimeout,
+			readTimeout:   s.readTimeout,
+			writeTimeout:  s.writeTimeout,
 		}
 
 		if !s.registerSession(sess) {
@@ -171,7 +182,15 @@ func (s *Server) Run(path string) error {
 			return
 		}
 
-		conn.SetPongHandler(func(string) error { return nil })
+		conn.SetReadLimit(s.readLimit)
+		conn.SetReadDeadline(time.Now().Add(s.readTimeout))
+		conn.SetPongHandler(func(string) error {
+			conn.SetReadDeadline(time.Now().Add(s.readTimeout))
+			if s.onPong != nil {
+				s.onPong(sess)
+			}
+			return nil
+		})
 
 		go sess.readPump(s)
 		go sess.writePump(s)

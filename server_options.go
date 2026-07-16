@@ -83,6 +83,19 @@ func WithOnActivity(f func(*Session)) ServerOption {
 	}
 }
 
+// WithOnPong registers a callback fired each time a pong is received from a
+// session in response to the server's periodic ping (see WithPingInterval).
+// Runs synchronously on the session's read loop, like WithOnActivity — keep
+// it fast. Useful for observability (e.g. logging last-seen times); the
+// read-deadline refresh that keeps the connection alive happens regardless
+// of whether this is set.
+func WithOnPong(f func(*Session)) ServerOption {
+	return func(s *Server) error {
+		s.onPong = f
+		return nil
+	}
+}
+
 // WithOnError registers a callback invoked whenever the server hits a
 // connection-level error. manageserver does no logging of its own, so wire
 // this into the caller's own logger.
@@ -98,6 +111,49 @@ func WithOnError(f func(error)) ServerOption {
 func WithSendTimeout(d time.Duration) ServerOption {
 	return func(s *Server) error {
 		s.sendTimeout = d
+		return nil
+	}
+}
+
+// WithReadTimeout overrides how long a session's connection may go without
+// a client pong or message before it's considered dead and torn down
+// (default 5 minutes). Refreshed on every pong and every successfully read
+// message, so a healthy connection under the configured WithPingInterval
+// never comes close to it.
+func WithReadTimeout(d time.Duration) ServerOption {
+	return func(s *Server) error {
+		s.readTimeout = d
+		return nil
+	}
+}
+
+// WithWriteTimeout overrides how long a single websocket write (a response,
+// a ping, or an outgoing message) may block before the connection is
+// considered dead and torn down (default 30 seconds).
+func WithWriteTimeout(d time.Duration) ServerOption {
+	return func(s *Server) error {
+		s.writeTimeout = d
+		return nil
+	}
+}
+
+// WithPingInterval overrides how often the server pings each connected
+// session to detect unresponsive peers (default 2 minutes). Keep this well
+// under WithReadTimeout so a healthy connection gets several chances to
+// respond before being torn down.
+func WithPingInterval(d time.Duration) ServerOption {
+	return func(s *Server) error {
+		s.pingInterval = d
+		return nil
+	}
+}
+
+// WithReadLimit overrides the maximum size in bytes of a single incoming
+// websocket message; larger frames cause the connection to be closed
+// (default 4MiB, matching local-central-client's file-upload chunk size).
+func WithReadLimit(n int64) ServerOption {
+	return func(s *Server) error {
+		s.readLimit = n
 		return nil
 	}
 }

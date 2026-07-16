@@ -42,6 +42,51 @@ func WithRequestTimeout(d time.Duration) ClientOption {
 	}
 }
 
+// WithClientReadTimeout overrides how long the connection may go without a
+// server ping or message before it's considered dead and torn down (default
+// 5 minutes). Refreshed on every ping received and every successfully read
+// message, so a healthy connection under the server's ping interval never
+// comes close to it.
+func WithClientReadTimeout(d time.Duration) ClientOption {
+	return func(c *Client) error {
+		c.readTimeout = d
+		return nil
+	}
+}
+
+// WithClientWriteTimeout overrides how long a single websocket write (a
+// request, a pong, or an outgoing message) may block before the connection
+// is considered dead and torn down (default 30 seconds).
+func WithClientWriteTimeout(d time.Duration) ClientOption {
+	return func(c *Client) error {
+		c.writeTimeout = d
+		return nil
+	}
+}
+
+// WithClientReadLimit overrides the maximum size in bytes of a single
+// incoming websocket message; larger frames cause the connection to be
+// closed (default 4MiB, matching local-central-client's file-upload chunk
+// size).
+func WithClientReadLimit(n int64) ClientOption {
+	return func(c *Client) error {
+		c.readLimit = n
+		return nil
+	}
+}
+
+// WithPingHandler registers a callback fired each time the client receives
+// a ping from the server. Runs synchronously on the read loop before the
+// pong is queued for sending — keep it fast. Useful for observability (e.g.
+// logging last-seen times); the read-deadline refresh and pong reply happen
+// regardless of whether this is set.
+func WithPingHandler(f func(*Client)) ClientOption {
+	return func(c *Client) error {
+		c.onPing = f
+		return nil
+	}
+}
+
 // WithErrorHandler registers a callback invoked whenever the client hits a
 // connection-level error (dial/read/write/decode failures). manageserver
 // does no logging of its own, so wire this into the caller's own logger.

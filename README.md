@@ -4,6 +4,48 @@
 
 DB 연동, 로깅, 도메인 로직(어떤 데이터를 언제 보낼지)은 전혀 알지 못합니다. 오직 연결 관리 + 메시지 프레이밍 + 요청/응답 매칭만 담당하고, 나머지는 옵션(콜백)으로 호출하는 쪽에서 주입합니다.
 
+## 역할과 책임 범위
+
+`manageserver`가 담당하는 기능:
+
+- WebSocket client 연결과 server listen
+- client ID 기반 session 등록 및 중복 연결 거절
+- JSON message framing
+- UUID message ID를 이용한 요청/응답 matching
+- ping/pong과 연결 종료 전파
+- action별 handler 등록
+- 선택적인 TLS, handshake 검증, HMAC 인증
+- 연결·활동·종료·오류 callback
+
+호출 애플리케이션이 담당하는 기능:
+
+- 환경변수와 설정 파일 로딩
+- DB 조회 및 영속화
+- 로그 기록과 metric
+- reconnect 정책
+- 어떤 action과 DTO를 사용할지에 대한 domain logic
+- secret 발급·저장·rotation
+- 배포 환경의 TLS 종단과 인증서 관리
+
+## 환경변수
+
+이 라이브러리는 환경변수를 직접 읽지 않습니다. 모든 설정은 `NewClient`와 `NewServer` option으로 주입합니다. 실제 환경변수 이름은 사용하는 애플리케이션의 README를 참고하세요.
+
+| 영역 | 주요 option | 기본값/설명 |
+|---|---|---|
+| Client identity | `WithID` | 필수 |
+| Client HMAC | `WithHMACAuth` | 선택 |
+| Client TLS | `WithTLSConfig`, `WithRootCAFile`, `WithInsecureSkipVerify` | 선택 |
+| Client timeout | `WithRequestTimeout` | 30분 (Send 응답 대기) |
+| Client 연결 상태 | `WithClientReadTimeout`, `WithClientWriteTimeout`, `WithClientReadLimit` | 5분 / 30초 / 4MiB |
+| Server address | `WithPort` | `8080` |
+| Server TLS | `WithTLS` | 인증서와 key를 함께 지정할 때 활성화 |
+| Server 인증 | `WithRequestValidator`, `WithAuthFunc` | 선택 |
+| Server timeout | `WithSendTimeout` | 60초 (Send 응답 대기) |
+| Server 연결 상태 | `WithReadTimeout`, `WithWriteTimeout`, `WithReadLimit`, `WithPingInterval` | 5분 / 30초 / 4MiB / 2분 |
+
+기본 endpoint path는 `/ws/`이며 client ID가 뒤에 붙어 `/ws/{id}` 형태로 연결됩니다.
+
 ## 구성
 
 - `manageserver` (root 패키지) — `Client`, `Server`, `Session`
@@ -76,9 +118,15 @@ err = c.Start("wss://central.example.com:8383", "/ws/")
 
 ## 주요 옵션
 
-**Server**: `WithPort`, `WithTLS(cert, key)`, `WithAuthFunc`, `WithRequestValidator`, `WithOnConnect`, `WithOnDisconnect`, `WithOnActivity`, `WithOnError`, `WithSendTimeout`
+**Server**: `WithPort`, `WithTLS(cert, key)`, `WithAuthFunc`, `WithRequestValidator`, `WithOnConnect`, `WithOnDisconnect`, `WithOnActivity`, `WithOnPong`, `WithOnError`, `WithSendTimeout`, `WithReadTimeout`, `WithWriteTimeout`, `WithReadLimit`, `WithPingInterval`
 
-**Client**: `WithID`(필수), `WithTLSConfig`, `WithRootCAFile`, `WithInsecureSkipVerify`, `WithHMACAuth`, `WithConnectHandler`, `WithErrorHandler`, `WithRequestTimeout`
+**Client**: `WithID`(필수), `WithTLSConfig`, `WithRootCAFile`, `WithInsecureSkipVerify`, `WithHMACAuth`, `WithConnectHandler`, `WithErrorHandler`, `WithPingHandler`, `WithRequestTimeout`, `WithClientReadTimeout`, `WithClientWriteTimeout`, `WithClientReadLimit`
+
+## 연결 상태 감지 (read/write deadline, ping/pong, read limit)
+
+기본값(서버 기준)으로, 서버는 2분마다 각 세션에 ping을 보내고(`WithPingInterval`), 클라이언트의 pong이나 다른 메시지가 5분 이상 오지 않으면 연결을 끊습니다(`WithReadTimeout`). 죽은 피어에 쓰다가 영원히 블록되는 걸 막기 위해 쓰기에도 30초 데드라인이 있습니다(`WithWriteTimeout`). 들어오는 프레임 크기는 기본 4MiB로 제한됩니다(`WithReadLimit`) — `local-central-client`의 파일 업로드 청크 크기(4MB)에 맞춘 값입니다. 클라이언트 쪽도 대칭으로 `WithClientReadTimeout`/`WithClientWriteTimeout`/`WithClientReadLimit`이 있습니다.
+
+`WithOnPong`(서버)과 `WithPingHandler`(클라이언트)는 ping/pong이 오갈 때마다 호출되는 관측용 콜백입니다 — 연결을 살려두는 동작 자체는 이 콜백을 등록하지 않아도 그대로 동작하고, 콜백은 로깅 같은 부가 용도로만 쓰입니다.
 
 ## id만으로는 부족한 인증이 필요할 때 (WithRequestValidator)
 

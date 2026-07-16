@@ -706,3 +706,128 @@ func TestNotifyNilHandlerReturnDoesNotCloseConnection(t *testing.T) {
 		t.Fatalf("expected connection to still be alive after a nil-returning Notify handler, got: %v", err)
 	}
 }
+
+// waitForSessionGone blocks until id is no longer in the server's session
+// registry, or fails the test.
+func waitForSessionGone(t *testing.T, s *manageserver.Server, id string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := s.Get(id); !ok {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("session %q was never removed", id)
+}
+
+func TestReadLimitClosesOversizedConnection(t *testing.T) {
+	errCh := make(chan error, 1)
+	srv, addr := startServer(t,
+		manageserver.WithReadLimit(64),
+		manageserver.WithOnError(func(err error) {
+			select {
+			case errCh <- err:
+			default:
+			}
+		}),
+	)
+	srv.On("Echo", func(sess *manageserver.Session, msg *protocol.Message) any {
+		return protocol.StatusResp{Ok: true}
+	})
+
+	c, err := manageserver.NewClient(manageserver.WithID("big-sender"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = c.Start(addr, "/ws/") }()
+	waitForSession(t, srv, "big-sender")
+
+	// Well over the 64-byte server-side read limit once JSON-encoded.
+	oversized := make([]byte, 1024)
+	if err := c.Notify("Echo", map[string]string{"data": string(oversized)}); err != nil {
+		t.Fatalf("Notify failed: %v", err)
+	}
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected a non-nil read-limit error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for server to report the oversized-frame error")
+	}
+
+	waitForSessionGone(t, srv, "big-sender")
+}
+
+func TestReadTimeoutClosesIdleConnection(t *testing.T) {
+	srv, addr := startServer(t,
+		manageserver.WithReadTimeout(200*time.Millisecond),
+		// Long enough that the ping ticker itself doesn't fire (and so
+		// refresh the read deadline) during this test.
+		manageserver.WithPingInterval(10*time.Minute),
+	)
+
+	c, err := manageserver.NewClient(manageserver.WithID("idle-client"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = c.Start(addr, "/ws/") }()
+	waitForSession(t, srv, "idle-client")
+
+	waitForSessionGone(t, srv, "idle-client")
+}
+
+// TestPingPongHooksFire also guards against a regression of the client-side
+// ping handler deadlocking: it used to send on an unbuffered channel with no
+// escape hatch, so if that ever regresses this test would hang and fail on
+// timeout rather than observing a second ping.
+func TestPingPongHooksFire(t *testing.T) {
+	pongCh := make(chan struct{}, 1)
+	srv, addr := startServer(t,
+		manageserver.WithPingInterval(50*time.Millisecond),
+		manageserver.WithOnPong(func(sess *manageserver.Session) {
+			select {
+			case pongCh <- struct{}{}:
+			default:
+			}
+		}),
+	)
+
+	pingCh := make(chan struct{}, 1)
+	c, err := manageserver.NewClient(
+		manageserver.WithID("ping-pong-client"),
+		manageserver.WithPingHandler(func(cl *manageserver.Client) {
+			select {
+			case pingCh <- struct{}{}:
+			default:
+			}
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = c.Start(addr, "/ws/") }()
+	waitForSession(t, srv, "ping-pong-client")
+
+	select {
+	case <-pingCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the client ping handler to fire")
+	}
+	select {
+	case <-pongCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the server pong handler to fire")
+	}
+
+	// A second round trip proves the first wasn't a fluke and the
+	// connection is still healthy — in particular, that the client's ping
+	// handler isn't blocked on its internal channel send.
+	select {
+	case <-pingCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for a second ping — connection may have stalled")
+	}
+}
