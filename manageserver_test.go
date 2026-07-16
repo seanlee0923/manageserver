@@ -1,7 +1,9 @@
 package manageserver_test
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"strconv"
 	"testing"
@@ -333,5 +335,246 @@ func TestCustomPath(t *testing.T) {
 	}
 	if err := wrongPathClient.Start(addr, "/ws/"); err == nil {
 		t.Fatal("expected dial against the wrong path to fail")
+	}
+}
+
+// waitForPendingAbove blocks until pending() reports a value greater than
+// zero, i.e. a Send has registered itself but not yet returned.
+func waitForPendingAbove(t *testing.T, pending func() int32) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for pending() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("Send never became pending")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestPendingCountReturnsToZeroAfterSend(t *testing.T) {
+	srv, addr := startServer(t)
+	srv.On("Echo", func(sess *manageserver.Session, msg *protocol.Message) any {
+		return map[string]string{"ok": "true"}
+	})
+
+	c, err := manageserver.NewClient(manageserver.WithID("device-pending-count"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = c.Start(addr, "/ws/") }()
+	waitForSession(t, srv, "device-pending-count")
+
+	if _, err := c.Send("Echo", map[string]string{}); err != nil {
+		t.Fatalf("Send failed: %v", err)
+	}
+	if got := c.Pending(); got != 0 {
+		t.Fatalf("expected Pending()==0 after Send completes, got %d", got)
+	}
+}
+
+// TestClientShutdownWaitsForPendingSend guards the core Shutdown contract:
+// it must let an in-flight Send finish normally rather than aborting it the
+// way Close does.
+func TestClientShutdownWaitsForPendingSend(t *testing.T) {
+	srv, addr := startServer(t)
+
+	release := make(chan struct{})
+	srv.On("Slow", func(sess *manageserver.Session, msg *protocol.Message) any {
+		<-release
+		return map[string]string{"ok": "true"}
+	})
+
+	c, err := manageserver.NewClient(manageserver.WithID("device-shutdown-wait"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = c.Start(addr, "/ws/") }()
+	waitForSession(t, srv, "device-shutdown-wait")
+
+	sendDone := make(chan error, 1)
+	go func() {
+		_, err := c.Send("Slow", map[string]string{})
+		sendDone <- err
+	}()
+	waitForPendingAbove(t, c.Pending)
+
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- c.Shutdown(context.Background()) }()
+
+	select {
+	case <-shutdownDone:
+		t.Fatal("Shutdown returned before the pending Send completed")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case err := <-sendDone:
+		if err != nil {
+			t.Fatalf("expected the pending Send to complete successfully, got: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Send did not complete after release")
+	}
+
+	select {
+	case err := <-shutdownDone:
+		if err != nil {
+			t.Fatalf("expected Shutdown to succeed, got: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Shutdown did not return after the pending Send completed")
+	}
+
+	if got := c.Pending(); got != 0 {
+		t.Fatalf("expected Pending()==0 after Shutdown, got %d", got)
+	}
+}
+
+// TestClientShutdownForceClosesOnTimeout guards the fallback path: if ctx
+// expires before the pending Send finishes, Shutdown must force-close the
+// connection instead of blocking forever.
+func TestClientShutdownForceClosesOnTimeout(t *testing.T) {
+	srv, addr := startServer(t)
+
+	block := make(chan struct{})
+	t.Cleanup(func() { close(block) })
+	srv.On("Forever", func(sess *manageserver.Session, msg *protocol.Message) any {
+		<-block
+		return nil
+	})
+
+	c, err := manageserver.NewClient(manageserver.WithID("device-shutdown-timeout"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = c.Start(addr, "/ws/") }()
+	waitForSession(t, srv, "device-shutdown-timeout")
+
+	go func() { _, _ = c.Send("Forever", map[string]string{}) }()
+	waitForPendingAbove(t, c.Pending)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	if err := c.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded, got: %v", err)
+	}
+
+	select {
+	case <-c.Context().Done():
+	case <-time.After(1 * time.Second):
+		t.Fatal("connection was not force-closed after Shutdown timed out")
+	}
+}
+
+// TestServerCloseSessionWaitsForPendingSend mirrors
+// TestClientShutdownWaitsForPendingSend from the server side.
+func TestServerCloseSessionWaitsForPendingSend(t *testing.T) {
+	srv, addr := startServer(t)
+
+	c, err := manageserver.NewClient(manageserver.WithID("device-close-session-wait"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	release := make(chan struct{})
+	c.On("Slow", func(cl *manageserver.Client, msg *protocol.Message) any {
+		<-release
+		return map[string]string{"ok": "true"}
+	})
+
+	go func() { _ = c.Start(addr, "/ws/") }()
+	waitForSession(t, srv, "device-close-session-wait")
+
+	sess, ok := srv.Get("device-close-session-wait")
+	if !ok {
+		t.Fatal("expected session to be registered")
+	}
+
+	sendDone := make(chan error, 1)
+	go func() {
+		_, err := sess.Send("Slow", map[string]string{})
+		sendDone <- err
+	}()
+	waitForPendingAbove(t, sess.Pending)
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- srv.CloseSession(context.Background(), "device-close-session-wait") }()
+
+	select {
+	case <-closeDone:
+		t.Fatal("CloseSession returned before the pending Send completed")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+
+	select {
+	case err := <-sendDone:
+		if err != nil {
+			t.Fatalf("expected the pending Send to complete successfully, got: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Send did not complete after release")
+	}
+
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("expected CloseSession to succeed, got: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("CloseSession did not return after the pending Send completed")
+	}
+}
+
+// TestServerCloseSessionForceClosesOnTimeout mirrors
+// TestClientShutdownForceClosesOnTimeout from the server side, and also
+// checks that the session is removed from the registry once force-closed.
+func TestServerCloseSessionForceClosesOnTimeout(t *testing.T) {
+	srv, addr := startServer(t)
+
+	c, err := manageserver.NewClient(manageserver.WithID("device-close-session-timeout"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	block := make(chan struct{})
+	t.Cleanup(func() { close(block) })
+	c.On("Forever", func(cl *manageserver.Client, msg *protocol.Message) any {
+		<-block
+		return nil
+	})
+
+	go func() { _ = c.Start(addr, "/ws/") }()
+	waitForSession(t, srv, "device-close-session-timeout")
+
+	sess, ok := srv.Get("device-close-session-timeout")
+	if !ok {
+		t.Fatal("expected session to be registered")
+	}
+
+	go func() { _, _ = sess.Send("Forever", map[string]string{}) }()
+	waitForPendingAbove(t, sess.Pending)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	err = srv.CloseSession(ctx, "device-close-session-timeout")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded, got: %v", err)
+	}
+
+	if _, ok := srv.Get("device-close-session-timeout"); ok {
+		t.Fatal("expected session to be removed from the registry after force close")
+	}
+}
+
+func TestServerCloseSessionUnknownID(t *testing.T) {
+	srv, _ := startServer(t)
+	if err := srv.CloseSession(context.Background(), "no-such-session"); err == nil {
+		t.Fatal("expected an error for an unknown session id")
 	}
 }

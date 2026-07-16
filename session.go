@@ -1,6 +1,7 @@
 package manageserver
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"sync"
@@ -29,6 +30,7 @@ type Session struct {
 	sendTimeout  time.Duration
 	pendingCalls sync.Map
 	pendingCnt   atomic.Int32
+	pendingDone  chan struct{}
 
 	closeOnce sync.Once
 }
@@ -36,6 +38,22 @@ type Session struct {
 // ID returns the session's connection id.
 func (s *Session) ID() string {
 	return s.id
+}
+
+// Pending returns the number of Send calls currently waiting on a response.
+func (s *Session) Pending() int32 {
+	return s.pendingCnt.Load()
+}
+
+func (s *Session) waitDrain(ctx context.Context) error {
+	for s.pendingCnt.Load() > 0 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-s.pendingDone:
+		}
+	}
+	return nil
 }
 
 // Send issues a request to this client and blocks until a matching
@@ -64,6 +82,10 @@ func (s *Session) Send(action string, data any) (*protocol.Message, error) {
 	defer func() {
 		s.pendingCalls.Delete(req.Id)
 		s.pendingCnt.Add(-1)
+		select {
+		case s.pendingDone <- struct{}{}:
+		default:
+		}
 	}()
 
 	select {

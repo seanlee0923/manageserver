@@ -38,6 +38,7 @@ type Client struct {
 
 	pendingCalls sync.Map
 	pendingCnt   atomic.Int32
+	pendingDone  chan struct{}
 
 	outCh   chan []byte
 	pCh     chan []byte
@@ -54,6 +55,7 @@ func NewClient(opts ...ClientOption) (*Client, error) {
 		outCh:       make(chan []byte),
 		pCh:         make(chan []byte),
 		CloseCh:     make(chan struct{}),
+		pendingDone: make(chan struct{}, 1),
 		sendTimeout: 30 * time.Minute,
 	}
 	// Valid from construction (not just after Start succeeds) so Context()
@@ -95,6 +97,8 @@ func (c *Client) Context() context.Context {
 
 // Close closes the underlying connection, causing Start to return and
 // Context to be canceled. Safe to call before Start (returns nil then).
+// Any Send calls still waiting on a response are aborted immediately with
+// a "connection closed" error; use Shutdown to let them finish first.
 func (c *Client) Close() error {
 	c.mu.Lock()
 	conn := c.conn
@@ -104,6 +108,33 @@ func (c *Client) Close() error {
 		return nil
 	}
 	return conn.Close()
+}
+
+// Pending returns the number of Send calls currently waiting on a response.
+func (c *Client) Pending() int32 {
+	return c.pendingCnt.Load()
+}
+
+// Shutdown waits for in-flight Send calls to finish (or ctx to be done),
+// then closes the connection. If ctx is done first, the connection is
+// force-closed via Close and ctx.Err() is returned.
+func (c *Client) Shutdown(ctx context.Context) error {
+	err := c.waitDrain(ctx)
+	if closeErr := c.Close(); closeErr != nil && err == nil {
+		err = closeErr
+	}
+	return err
+}
+
+func (c *Client) waitDrain(ctx context.Context) error {
+	for c.pendingCnt.Load() > 0 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-c.pendingDone:
+		}
+	}
+	return nil
 }
 
 // Start dials serverAddr (e.g. "ws://host:port" or "wss://host:port") joined
@@ -174,6 +205,10 @@ func (c *Client) Send(action string, data any) (*protocol.Message, error) {
 	defer func() {
 		c.pendingCalls.Delete(req.Id)
 		c.pendingCnt.Add(-1)
+		select {
+		case c.pendingDone <- struct{}{}:
+		default:
+		}
 	}()
 
 	select {

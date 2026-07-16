@@ -1,6 +1,8 @@
 package manageserver
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -76,6 +78,20 @@ func (s *Server) Get(id string) (*Session, bool) {
 	return sess, ok
 }
 
+// CloseSession waits for any Send calls in flight on the session for id to
+// finish (or ctx to be done), then forcibly closes its connection. If ctx
+// is done first, the connection is force-closed anyway and ctx.Err() is
+// returned; the caller decides whether that's worth surfacing.
+func (s *Server) CloseSession(ctx context.Context, id string) error {
+	sess, ok := s.Get(id)
+	if !ok {
+		return fmt.Errorf("manageserver: no session for id %q", id)
+	}
+	err := sess.waitDrain(ctx)
+	sess.closeConn(s)
+	return err
+}
+
 func (s *Server) delete(id string) {
 	s.mu.Lock()
 	sess, ok := s.clients[id]
@@ -144,6 +160,7 @@ func (s *Server) Run(path string) error {
 			conn:          conn,
 			outCh:         make(chan []byte),
 			done:          make(chan struct{}),
+			pendingDone:   make(chan struct{}, 1),
 			pTicker:       time.NewTicker(2 * time.Minute),
 			sendTimeout:   s.sendTimeout,
 		}
