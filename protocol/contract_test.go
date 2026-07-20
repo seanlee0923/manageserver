@@ -38,6 +38,14 @@ func TestWireDTOContracts(t *testing.T) {
 			want:  `{"cp_duration":1,"pc_duration":2,"sync_duration":3,"record_duration":4}`,
 		},
 		{
+			name: "charge point status with daily reboot count",
+			value: ChargePointStat{
+				Serial: "CP-1", LastStatus: "Available", LastStatusDetail: "NoError",
+				LastStatusTimestamp: "2026-07-20 12:00:00", LastDisconnectedTime: "-", DailyRebootCount: 2,
+			},
+			want: `{"s":"CP-1","ls":"Available","lsd":"NoError","lst":"2026-07-20 12:00:00","ldct":"-","daily_reboot_count":2}`,
+		},
+		{
 			name:  "trigger",
 			value: MessageTriggerReq{MsgType: "PcStatus", MinAfter: 5},
 			want:  `{"msg_type":"PcStatus","min_after":5}`,

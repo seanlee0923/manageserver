@@ -67,6 +67,7 @@ type ChargePointStat struct {
 	LastStatusDetail     string `json:"lsd"`
 	LastStatusTimestamp  string `json:"lst"`
 	LastDisconnectedTime string `json:"ldct"`
+	DailyRebootCount     int    `json:"daily_reboot_count"`
 }
 
 type ChargePointBootCnt struct {
