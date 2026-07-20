@@ -140,6 +140,117 @@ func TestRoundTrip(t *testing.T) {
 	}
 }
 
+func requireRemoteProtocolError(t *testing.T, err error, code string) {
+	t.Helper()
+	var protocolErr *manageserver.RemoteProtocolError
+	if !errors.As(err, &protocolErr) {
+		t.Fatalf("error = %v, want RemoteProtocolError", err)
+	}
+	if protocolErr.Code != code {
+		t.Fatalf("protocol error code = %q, want %q", protocolErr.Code, code)
+	}
+}
+
+func TestUnknownActionReturnsErrorAndKeepsServerSessionAlive(t *testing.T) {
+	reported := make(chan error, 4)
+	srv, addr := startServer(t, manageserver.WithOnError(func(err error) {
+		reported <- err
+	}))
+	srv.On("Ping", func(sess *manageserver.Session, msg *protocol.Message) any {
+		return protocol.StatusResp{Ok: true}
+	})
+
+	c, err := manageserver.NewClient(manageserver.WithID("unknown-action-server"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = c.Start(addr, "/ws/") }()
+	waitForSession(t, srv, "unknown-action-server")
+
+	_, err = c.Send("NotRegistered", map[string]string{})
+	requireRemoteProtocolError(t, err, "unknown_action")
+
+	select {
+	case reportedErr := <-reported:
+		var dispatchErr *manageserver.DispatchError
+		if !errors.As(reportedErr, &dispatchErr) || dispatchErr.Action != "NotRegistered" {
+			t.Fatalf("reported error = %#v, want structured DispatchError", reportedErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("unknown action was not reported")
+	}
+
+	if _, err := c.Send("Ping", map[string]string{}); err != nil {
+		t.Fatalf("session did not survive unknown action: %v", err)
+	}
+}
+
+func TestServerHandlerPanicReturnsErrorAndKeepsSessionAlive(t *testing.T) {
+	srv, addr := startServer(t)
+	srv.On("Panic", func(sess *manageserver.Session, msg *protocol.Message) any {
+		panic("boom")
+	})
+	srv.On("Ping", func(sess *manageserver.Session, msg *protocol.Message) any {
+		return protocol.StatusResp{Ok: true}
+	})
+
+	c, err := manageserver.NewClient(manageserver.WithID("panic-server"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = c.Start(addr, "/ws/") }()
+	waitForSession(t, srv, "panic-server")
+
+	_, err = c.Send("Panic", map[string]string{})
+	requireRemoteProtocolError(t, err, "handler_panic")
+	if _, err := c.Send("Ping", map[string]string{}); err != nil {
+		t.Fatalf("session did not survive handler panic: %v", err)
+	}
+}
+
+func TestUnknownActionReturnsErrorAndKeepsClientConnectionAlive(t *testing.T) {
+	srv, addr := startServer(t)
+	c, err := manageserver.NewClient(manageserver.WithID("unknown-action-client"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.On("Ping", func(client *manageserver.Client, msg *protocol.Message) any {
+		return protocol.StatusResp{Ok: true}
+	})
+	go func() { _ = c.Start(addr, "/ws/") }()
+	waitForSession(t, srv, "unknown-action-client")
+	sess, _ := srv.Get("unknown-action-client")
+
+	_, err = sess.Send("NotRegistered", map[string]string{})
+	requireRemoteProtocolError(t, err, "unknown_action")
+	if _, err := sess.Send("Ping", map[string]string{}); err != nil {
+		t.Fatalf("client connection did not survive unknown action: %v", err)
+	}
+}
+
+func TestClientHandlerPanicReturnsErrorAndKeepsConnectionAlive(t *testing.T) {
+	srv, addr := startServer(t)
+	c, err := manageserver.NewClient(manageserver.WithID("panic-client"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.On("Panic", func(client *manageserver.Client, msg *protocol.Message) any {
+		panic("boom")
+	})
+	c.On("Ping", func(client *manageserver.Client, msg *protocol.Message) any {
+		return protocol.StatusResp{Ok: true}
+	})
+	go func() { _ = c.Start(addr, "/ws/") }()
+	waitForSession(t, srv, "panic-client")
+	sess, _ := srv.Get("panic-client")
+
+	_, err = sess.Send("Panic", map[string]string{})
+	requireRemoteProtocolError(t, err, "handler_panic")
+	if _, err := sess.Send("Ping", map[string]string{}); err != nil {
+		t.Fatalf("client connection did not survive handler panic: %v", err)
+	}
+}
+
 func TestDuplicateConnectionRejected(t *testing.T) {
 	srv, addr := startServer(t)
 

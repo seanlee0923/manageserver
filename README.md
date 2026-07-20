@@ -161,3 +161,11 @@ bearer token이나 mTLS 클라이언트 인증서 검사처럼 다른 방식이 
 ```
 go test ./... -race
 ```
+
+## 프로토콜 오류 처리
+
+- 등록되지 않은 request action은 `unknown_action` 오류로 즉시 응답한다.
+- handler panic은 `handler_panic`으로 응답하고 연결은 유지한다.
+- notify 오류는 응답 없이 error hook에 보고한다.
+- `Send`는 원격 오류를 `*manageserver.RemoteProtocolError`로 반환한다.
+- error hook에는 action과 message/session ID를 가진 `*manageserver.DispatchError`가 전달된다.

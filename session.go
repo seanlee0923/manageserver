@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -98,6 +99,9 @@ func (s *Session) Send(action string, data any) (*protocol.Message, error) {
 
 	select {
 	case resp := <-respCh:
+		if err := responseProtocolError(resp); err != nil {
+			return nil, err
+		}
 		return resp, nil
 	case <-s.done:
 		return nil, errors.New("manageserver: connection closed")
@@ -166,7 +170,7 @@ func (s *Session) readPump(srv *Server) {
 			return
 		}
 
-		if msg.Type == protocol.Resp {
+		if msg.Type == protocol.Resp || msg.Type == protocol.Err {
 			if call, ok := s.pendingCalls.Load(msg.Id); ok {
 				if callCh, ok := call.(chan *protocol.Message); ok {
 					callCh <- msg
@@ -177,50 +181,80 @@ func (s *Session) readPump(srv *Server) {
 
 		h := srv.getHandler(msg.Action)
 		if h == nil {
+			dispatchErr := &DispatchError{
+				Code: protocolCodeUnknownAction, Side: "server", SessionID: s.ID(),
+				MessageID: msg.Id, Action: msg.Action, Cause: "handler not registered",
+			}
+			srv.reportError(dispatchErr)
+			if msg.Type == protocol.Req {
+				if err := s.sendResponse(msg, protocol.Err,
+					protocolErrorPayload(protocolCodeUnknownAction, "unknown action")); err != nil {
+					srv.reportError(err)
+					return
+				}
+			}
 			continue
 		}
 
 		if msg.Type == protocol.Notify {
-			h(s, msg)
-			if srv.onActivity != nil {
+			_, panicked := invokeServerHandler(srv, s, msg, h)
+			if !panicked && srv.onActivity != nil {
 				srv.onActivity(s)
 			}
 			continue
 		}
 
-		resp := h(s, msg)
+		resp, panicked := invokeServerHandler(srv, s, msg, h)
+		if panicked {
+			if err := s.sendResponse(msg, protocol.Err,
+				protocolErrorPayload(protocolCodeHandlerPanic, "handler failed")); err != nil {
+				srv.reportError(err)
+				return
+			}
+			continue
+		}
 		if resp == nil {
 			break
 		}
-
-		respBytes, err := json.Marshal(resp)
-		if err != nil {
+		if err := s.sendResponse(msg, protocol.Resp, resp); err != nil {
 			srv.reportError(err)
 			break
-		}
-
-		respMsg := protocol.Message{
-			Id:     msg.Id,
-			Type:   protocol.Resp,
-			Action: msg.Action,
-			Data:   respBytes,
-		}
-
-		outBytes, err := respMsg.ToBytes()
-		if err != nil {
-			srv.reportError(err)
-			break
-		}
-
-		select {
-		case s.outCh <- outBytes:
-		case <-s.done:
-			return
 		}
 
 		if srv.onActivity != nil {
 			srv.onActivity(s)
 		}
+	}
+}
+
+func invokeServerHandler(srv *Server, sess *Session, msg *protocol.Message, handler ServerHandler) (resp any, panicked bool) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			panicked = true
+			srv.reportError(&DispatchError{
+				Code: protocolCodeHandlerPanic, Side: "server", SessionID: sess.ID(),
+				MessageID: msg.Id, Action: msg.Action, Cause: recovered,
+			})
+		}
+	}()
+	return handler(sess, msg), false
+}
+
+func (s *Session) sendResponse(request *protocol.Message, messageType protocol.MessageType, payload any) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	response := protocol.Message{Id: request.Id, Type: messageType, Action: request.Action, Data: data}
+	outBytes, err := response.ToBytes()
+	if err != nil {
+		return err
+	}
+	select {
+	case s.outCh <- outBytes:
+		return nil
+	case <-s.done:
+		return fmt.Errorf("manageserver: connection closed")
 	}
 }
 

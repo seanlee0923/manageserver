@@ -24,6 +24,12 @@ type Message struct {
 	Data   json.RawMessage `json:"data"`
 }
 
+// ErrorResp is the stable wire payload for protocol.Err messages.
+type ErrorResp struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
 func ToMessage(message []byte) (*Message, error) {
 	var msg Message
 

@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -235,6 +236,9 @@ func (c *Client) Send(action string, data any) (*protocol.Message, error) {
 
 	select {
 	case resp := <-respCh:
+		if err := responseProtocolError(resp); err != nil {
+			return nil, err
+		}
 		return resp, nil
 	case <-c.ctx.Done():
 		return nil, errors.New("manageserver: connection closed")
@@ -310,7 +314,7 @@ func (c *Client) readPump() {
 			return
 		}
 
-		if msg.Type == protocol.Resp {
+		if msg.Type == protocol.Resp || msg.Type == protocol.Err {
 			if call, ok := c.pendingCalls.Load(msg.Id); ok {
 				if callCh, ok := call.(chan *protocol.Message); ok {
 					callCh <- msg
@@ -321,43 +325,73 @@ func (c *Client) readPump() {
 
 		h := c.h[msg.Action]
 		if h == nil {
+			dispatchErr := &DispatchError{
+				Code: protocolCodeUnknownAction, Side: "client", SessionID: c.ID(),
+				MessageID: msg.Id, Action: msg.Action, Cause: "handler not registered",
+			}
+			c.reportError(dispatchErr)
+			if msg.Type == protocol.Req {
+				if err := c.sendResponse(msg, protocol.Err,
+					protocolErrorPayload(protocolCodeUnknownAction, "unknown action")); err != nil {
+					c.reportError(err)
+					return
+				}
+			}
 			continue
 		}
 
 		if msg.Type == protocol.Notify {
-			h(c, msg)
+			_, _ = invokeClientHandler(c, msg, h)
 			continue
 		}
 
-		resp := h(c, msg)
+		resp, panicked := invokeClientHandler(c, msg, h)
+		if panicked {
+			if err := c.sendResponse(msg, protocol.Err,
+				protocolErrorPayload(protocolCodeHandlerPanic, "handler failed")); err != nil {
+				c.reportError(err)
+				return
+			}
+			continue
+		}
 		if resp == nil {
 			break
 		}
-
-		respBytes, err := json.Marshal(resp)
-		if err != nil {
+		if err := c.sendResponse(msg, protocol.Resp, resp); err != nil {
 			c.reportError(err)
 			break
 		}
+	}
+}
 
-		respMsg := protocol.Message{
-			Id:     msg.Id,
-			Type:   protocol.Resp,
-			Action: msg.Action,
-			Data:   respBytes,
+func invokeClientHandler(client *Client, msg *protocol.Message, handler ClientHandler) (resp any, panicked bool) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			panicked = true
+			client.reportError(&DispatchError{
+				Code: protocolCodeHandlerPanic, Side: "client", SessionID: client.ID(),
+				MessageID: msg.Id, Action: msg.Action, Cause: recovered,
+			})
 		}
+	}()
+	return handler(client, msg), false
+}
 
-		outBytes, err := respMsg.ToBytes()
-		if err != nil {
-			c.reportError(err)
-			break
-		}
-
-		select {
-		case c.outCh <- outBytes:
-		case <-c.ctx.Done():
-			return
-		}
+func (c *Client) sendResponse(request *protocol.Message, messageType protocol.MessageType, payload any) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	response := protocol.Message{Id: request.Id, Type: messageType, Action: request.Action, Data: data}
+	outBytes, err := response.ToBytes()
+	if err != nil {
+		return err
+	}
+	select {
+	case c.outCh <- outBytes:
+		return nil
+	case <-c.ctx.Done():
+		return fmt.Errorf("manageserver: connection closed")
 	}
 }
 
