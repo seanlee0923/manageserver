@@ -24,8 +24,8 @@ func TestWireDTOContracts(t *testing.T) {
 	}{
 		{
 			name:  "file transfer",
-			value: FileUploadReq{CommandId: "cmd-1", FileId: 7, FileName: "image.tar", FileSize: 1024, AllowKey: "grant"},
-			want:  `{"command_id":"cmd-1","file_id":7,"file_name":"image.tar","file_size":1024,"allow_key":"grant"}`,
+			value: FileUploadReq{CommandId: "cmd-1", FileId: 7, FileName: "image.tar", FileSize: 1024, Checksum: "abc123", AllowKey: "grant"},
+			want:  `{"command_id":"cmd-1","file_id":7,"file_name":"image.tar","file_size":1024,"checksum":"abc123","allow_key":"grant"}`,
 		},
 		{
 			name:  "command result",
