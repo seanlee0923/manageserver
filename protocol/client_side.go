@@ -111,8 +111,3 @@ type BootAlertReq struct {
 type FileUploadResp struct {
 	Status string `json:"st"`
 }
-
-type BootNotificationCntResp struct {
-	ChargePointId string `json:"charge_point_id"`
-	PeriodBootCnt int    `json:"period_boot_cnt"`
-}

@@ -37,9 +37,3 @@ type MessageTriggerReq struct {
 	MsgType  string `json:"msg_type"`
 	MinAfter int    `json:"min_after"`
 }
-
-type BootNotificationCntReq struct {
-	ChargePointId string `json:"charge_point_id"`
-	SearchStDate  string `json:"search_st_date"`
-	SearchEndDate string `json:"search_end_date"`
-}
