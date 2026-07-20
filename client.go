@@ -199,6 +199,15 @@ func (c *Client) Start(serverAddr, path string) error {
 // Send issues a request and blocks until a matching response arrives or
 // sendTimeout elapses (configurable via WithSendTimeout).
 func (c *Client) Send(action string, data any) (*protocol.Message, error) {
+	return c.SendContext(context.Background(), action, data)
+}
+
+// SendContext issues a request and aborts when either the client connection or
+// the caller-provided context is canceled.
+func (c *Client) SendContext(ctx context.Context, action string, data any) (*protocol.Message, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	raw, err := json.Marshal(data)
 	if err != nil {
 		return nil, err
@@ -232,6 +241,8 @@ func (c *Client) Send(action string, data any) (*protocol.Message, error) {
 	case c.outCh <- msgBytes:
 	case <-c.ctx.Done():
 		return nil, errors.New("manageserver: connection closed")
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 
 	select {
@@ -242,6 +253,8 @@ func (c *Client) Send(action string, data any) (*protocol.Message, error) {
 		return resp, nil
 	case <-c.ctx.Done():
 		return nil, errors.New("manageserver: connection closed")
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	case <-time.After(c.sendTimeout):
 		return nil, errors.New("manageserver: send timeout")
 	}

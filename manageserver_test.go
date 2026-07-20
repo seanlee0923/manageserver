@@ -483,6 +483,23 @@ func TestPendingCountReturnsToZeroAfterSend(t *testing.T) {
 	}
 }
 
+func TestSendContextStopsWhenCallerCancels(t *testing.T) {
+	c, err := manageserver.NewClient(manageserver.WithID("context-cancel-device"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = c.SendContext(ctx, "Never", map[string]string{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("SendContext error = %v, want context canceled", err)
+	}
+	if got := c.Pending(); got != 0 {
+		t.Fatalf("pending calls = %d after canceled SendContext", got)
+	}
+}
+
 // TestClientShutdownWaitsForPendingSend guards the core Shutdown contract:
 // it must let an in-flight Send finish normally rather than aborting it the
 // way Close does.
