@@ -12,6 +12,7 @@ DB 연동, 로깅, 도메인 로직(어떤 데이터를 언제 보낼지)은 전
 - client ID 기반 session 등록 및 중복 연결 거절
 - JSON message framing
 - UUID message ID를 이용한 요청/응답 matching
+- context 취소를 지원하는 `Client.SendContext`/`Session.SendContext`
 - ping/pong과 연결 종료 전파
 - action별 handler 등록
 - 선택적인 TLS, handshake 검증, HMAC 인증
@@ -50,6 +51,8 @@ DB 연동, 로깅, 도메인 로직(어떤 데이터를 언제 보낼지)은 전
 
 - `manageserver` (root 패키지) — `Client`, `Server`, `Session`
 - `manageserver/protocol` — 실제로 주고받는 메시지 구조체 (`Message`, `LoginReq`, `TickerConfigReq` 등). client/server 양쪽에서 동일하게 사용해야 하는 부분만 여기 있습니다.
+
+파일 전송 계약의 `FileUploadReq`에는 원본 파일명, 파일 크기, MD5 checksum, 일회성 grant가 포함됩니다. checksum 검증과 임시 파일 저장은 도메인 애플리케이션이 담당합니다.
 
 ## 설치
 
@@ -114,6 +117,14 @@ c, err := manageserver.NewClient(
 c.On("TickerConfig", handler.ConfigTicker)
 
 err = c.Start("wss://central.example.com:8383", "/ws/")
+```
+
+응답을 기다리는 요청을 호출자의 취소와 함께 중단하려면 `SendContext`를 사용합니다.
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 65*time.Second)
+defer cancel()
+resp, err := c.SendContext(ctx, "File", request)
 ```
 
 ## 주요 옵션
