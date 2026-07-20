@@ -62,6 +62,15 @@ func (s *Session) waitDrain(ctx context.Context) error {
 // Send issues a request to this client and blocks until a matching
 // response arrives or the server's sendTimeout elapses.
 func (s *Session) Send(action string, data any) (*protocol.Message, error) {
+	return s.SendContext(context.Background(), action, data)
+}
+
+// SendContext issues a request and aborts when either the session or the
+// caller-provided context is canceled.
+func (s *Session) SendContext(ctx context.Context, action string, data any) (*protocol.Message, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	raw, err := json.Marshal(data)
 	if err != nil {
 		return nil, err
@@ -95,6 +104,8 @@ func (s *Session) Send(action string, data any) (*protocol.Message, error) {
 	case s.outCh <- msgBytes:
 	case <-s.done:
 		return nil, errors.New("manageserver: connection closed")
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 
 	select {
@@ -105,6 +116,8 @@ func (s *Session) Send(action string, data any) (*protocol.Message, error) {
 		return resp, nil
 	case <-s.done:
 		return nil, errors.New("manageserver: connection closed")
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	case <-time.After(s.sendTimeout):
 		return nil, errors.New("manageserver: send timeout")
 	}
