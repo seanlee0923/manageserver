@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/seanlee0923/manageserver/protocol"
 )
 
 type ServerOption func(*Server) error
@@ -102,6 +104,17 @@ func WithOnPong(f func(*Session)) ServerOption {
 func WithOnError(f func(error)) ServerOption {
 	return func(s *Server) error {
 		s.onError = f
+		return nil
+	}
+}
+
+// WithServerInboundHandler registers an observability hook invoked for every
+// valid protocol message received from a client. It covers requests,
+// notifications, responses and errors, including messages whose action has no
+// registered handler. The hook runs synchronously and should return quickly.
+func WithServerInboundHandler(f func(*Session, *protocol.Message)) ServerOption {
+	return func(s *Server) error {
+		s.onInbound = f
 		return nil
 	}
 }

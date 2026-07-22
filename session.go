@@ -182,6 +182,9 @@ func (s *Session) readPump(srv *Server) {
 			srv.reportError(err)
 			return
 		}
+		if srv.onInbound != nil {
+			srv.onInbound(s, msg)
+		}
 
 		if msg.Type == protocol.Resp || msg.Type == protocol.Err {
 			if call, ok := s.pendingCalls.Load(msg.Id); ok {

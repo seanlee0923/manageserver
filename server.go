@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/seanlee0923/manageserver/protocol"
 )
 
 // Server accepts websocket connections from Clients and dispatches
@@ -36,6 +37,7 @@ type Server struct {
 	onActivity       func(*Session)
 	onPong           func(*Session)
 	onError          func(error)
+	onInbound        func(*Session, *protocol.Message)
 
 	mu      sync.Mutex
 	h       map[string]ServerHandler

@@ -237,6 +237,67 @@ func TestClientOutboundHandlerObservesRequestsNotifiesAndResponses(t *testing.T)
 	_ = c.Close()
 }
 
+func TestServerInboundHandlerObservesRequestsNotifiesAndResponses(t *testing.T) {
+	inbound := make(chan protocol.Message, 3)
+	srv, addr := startServer(t,
+		manageserver.WithServerInboundHandler(func(_ *manageserver.Session, message *protocol.Message) {
+			inbound <- *message
+		}),
+	)
+	srv.On("ClientRequest", func(_ *manageserver.Session, _ *protocol.Message) any {
+		return protocol.StatusResp{Ok: true}
+	})
+
+	c, err := manageserver.NewClient(manageserver.WithID("inbound-client"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.On("ServerRequest", func(_ *manageserver.Client, _ *protocol.Message) any {
+		return protocol.StatusResp{Ok: true}
+	})
+	go func() { _ = c.Start(addr, "/ws/") }()
+	waitForSession(t, srv, "inbound-client")
+
+	if _, err := c.Send("ClientRequest", struct{}{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Notify("ClientNotify", struct{}{}); err != nil {
+		t.Fatal(err)
+	}
+	sess, ok := srv.Get("inbound-client")
+	if !ok {
+		t.Fatal("client session not found")
+	}
+	if _, err := sess.Send("ServerRequest", struct{}{}); err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[string]protocol.MessageType{
+		"ClientRequest": protocol.Req,
+		"ClientNotify":  protocol.Notify,
+		"ServerRequest": protocol.Resp,
+	}
+	for range want {
+		select {
+		case message := <-inbound:
+			messageType, exists := want[message.Action]
+			if !exists {
+				t.Fatalf("unexpected inbound action %q", message.Action)
+			}
+			if message.Type != messageType {
+				t.Fatalf("inbound %s type = %v, want %v", message.Action, message.Type, messageType)
+			}
+			if message.Id == "" {
+				t.Fatalf("inbound %s has empty message id", message.Action)
+			}
+			delete(want, message.Action)
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for inbound messages; missing=%v", want)
+		}
+	}
+	_ = c.Close()
+}
+
 func requireRemoteProtocolError(t *testing.T, err error, code string) {
 	t.Helper()
 	var protocolErr *manageserver.RemoteProtocolError
