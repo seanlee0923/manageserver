@@ -33,6 +33,22 @@ func TestWireDTOContracts(t *testing.T) {
 			want:  `{"command_id":"cmd-1","success":true,"message":"done"}`,
 		},
 		{
+			name: "firmware deployment request",
+			value: FirmwareDeployReq{
+				CommandId: "cmd-2", FileId: 8, FileName: "charger.bin", TargetVersion: "1.2.3",
+				ChargePointIds: []string{"CP-1", "CP-2"}, Retries: 2, RetryInterval: 60,
+			},
+			want: `{"command_id":"cmd-2","file_id":8,"file_name":"charger.bin","target_version":"1.2.3","charge_point_ids":["CP-1","CP-2"],"retries":2,"retry_interval":60}`,
+		},
+		{
+			name: "firmware deployment response",
+			value: FirmwareDeployResp{
+				Status: "OK", RequestedChargePointIds: []string{"CP-1"},
+				Skipped: []FirmwareDeploySkip{{ChargePointId: "CP-2", Reason: "charging"}},
+			},
+			want: `{"status":"OK","requested_charge_point_ids":["CP-1"],"skipped":[{"charge_point_id":"CP-2","reason":"charging"}]}`,
+		},
+		{
 			name:  "ticker config",
 			value: TickerConfigReq{CpDuration: 1, PcDuration: 2, SyncDuration: 3, RecordDuration: 4},
 			want:  `{"cp_duration":1,"pc_duration":2,"sync_duration":3,"record_duration":4}`,

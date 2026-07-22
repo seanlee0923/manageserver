@@ -54,6 +54,8 @@ DB 연동, 로깅, 도메인 로직(어떤 데이터를 언제 보낼지)은 전
 
 파일 전송 계약의 `FileUploadReq`에는 원본 파일명, 파일 크기, MD5 checksum, 일회성 grant가 포함됩니다. checksum 검증과 임시 파일 저장은 도메인 애플리케이션이 담당합니다.
 
+펌웨어 배포는 파일 전송과 분리된 `DeployFirmware` action을 사용합니다. `FirmwareDeployReq`는 이미 현장에 전송된 파일과 복수의 충전기 ID를 지정합니다. `FirmwareDeployResp`는 로컬 CSMS에 요청한 충전기와 충전 중 등의 이유로 제외한 충전기를 구분하는 즉시 응답일 뿐, 설치 완료를 뜻하지 않습니다. 실제 완료 여부는 이후 `BootNotification`에서 보고된 펌웨어 버전을 목표 버전과 비교해 호출 애플리케이션이 판정합니다.
+
 ## 설치
 
 퍼블릭 저장소([github.com/seanlee0923/manageserver](https://github.com/seanlee0923/manageserver))라 별도 설정 없이 바로 받아 쓸 수 있습니다.
