@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,6 +18,49 @@ import (
 
 	"github.com/seanlee0923/manageserver/protocol"
 )
+
+const maxHandshakeErrorBody = 4 * 1024
+
+// HandshakeError describes an HTTP response that failed to upgrade to a
+// WebSocket connection. It retains the original dial error while exposing
+// enough response detail to diagnose auth, routing and proxy failures.
+type HandshakeError struct {
+	StatusCode int
+	Status     string
+	Body       string
+	Err        error
+}
+
+func (e *HandshakeError) Error() string {
+	if e.Body == "" {
+		return fmt.Sprintf("websocket handshake failed: status=%s: %v", e.Status, e.Err)
+	}
+	return fmt.Sprintf("websocket handshake failed: status=%s body=%q: %v", e.Status, e.Body, e.Err)
+}
+
+func (e *HandshakeError) Unwrap() error {
+	return e.Err
+}
+
+func newHandshakeError(resp *http.Response, err error) error {
+	if resp == nil {
+		return err
+	}
+
+	handshakeErr := &HandshakeError{
+		StatusCode: resp.StatusCode,
+		Status:     resp.Status,
+		Err:        err,
+	}
+	if resp.Body != nil {
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxHandshakeErrorBody))
+		_ = resp.Body.Close()
+		if readErr == nil {
+			handshakeErr.Body = strings.TrimSpace(string(body))
+		}
+	}
+	return handshakeErr
+}
 
 // Client is a websocket connection to a manageserver Server. Domain logic
 // (what to send, on what schedule) lives entirely in the caller; Client only
@@ -166,9 +211,9 @@ func (c *Client) Start(serverAddr, path string) error {
 		signHMACRequest(header, c.id, c.hmacSecret, uuid.NewString(), time.Now())
 	}
 
-	conn, _, err := c.dialer.Dial(urlStr, header)
+	conn, resp, err := c.dialer.Dial(urlStr, header)
 	if err != nil {
-		return err
+		return newHandshakeError(resp, err)
 	}
 
 	conn.SetReadLimit(c.readLimit)

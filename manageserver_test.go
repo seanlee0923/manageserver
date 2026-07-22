@@ -5,13 +5,48 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/seanlee0923/manageserver"
 	"github.com/seanlee0923/manageserver/protocol"
 )
+
+func TestClientStartReportsHandshakeResponse(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "upstream unavailable", http.StatusBadGateway)
+	}))
+	defer upstream.Close()
+
+	c, err := manageserver.NewClient(manageserver.WithID("device-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = c.Start("ws"+strings.TrimPrefix(upstream.URL, "http"), "/ws/")
+	if err == nil {
+		t.Fatal("expected handshake error")
+	}
+
+	var handshakeErr *manageserver.HandshakeError
+	if !errors.As(err, &handshakeErr) {
+		t.Fatalf("expected HandshakeError, got %T: %v", err, err)
+	}
+	if handshakeErr.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status code = %d, want %d", handshakeErr.StatusCode, http.StatusBadGateway)
+	}
+	if handshakeErr.Body != "upstream unavailable" {
+		t.Fatalf("body = %q, want %q", handshakeErr.Body, "upstream unavailable")
+	}
+	if !errors.Is(err, websocket.ErrBadHandshake) {
+		t.Fatalf("error should wrap websocket.ErrBadHandshake: %v", err)
+	}
+}
 
 // freePort grabs an OS-assigned free TCP port for a test server to bind to.
 func freePort(t *testing.T) string {
