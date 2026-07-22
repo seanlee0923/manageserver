@@ -77,9 +77,10 @@ type Client struct {
 	readLimit    int64
 	hmacSecret   string
 
-	onError   func(error)
-	onConnect func(*Client)
-	onPing    func(*Client)
+	onError    func(error)
+	onConnect  func(*Client)
+	onPing     func(*Client)
+	onOutbound func(*protocol.Message)
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -284,6 +285,7 @@ func (c *Client) SendContext(ctx context.Context, action string, data any) (*pro
 
 	select {
 	case c.outCh <- msgBytes:
+		c.reportOutbound(req)
 	case <-c.ctx.Done():
 		return nil, errors.New("manageserver: connection closed")
 	case <-ctx.Done():
@@ -330,6 +332,7 @@ func (c *Client) Notify(action string, data any) error {
 
 	select {
 	case c.outCh <- msgBytes:
+		c.reportOutbound(msg)
 		return nil
 	case <-c.ctx.Done():
 		return errors.New("manageserver: connection closed")
@@ -339,6 +342,12 @@ func (c *Client) Notify(action string, data any) error {
 func (c *Client) reportError(err error) {
 	if c.onError != nil {
 		c.onError(err)
+	}
+}
+
+func (c *Client) reportOutbound(message *protocol.Message) {
+	if c.onOutbound != nil {
+		c.onOutbound(message)
 	}
 }
 
@@ -447,6 +456,7 @@ func (c *Client) sendResponse(request *protocol.Message, messageType protocol.Me
 	}
 	select {
 	case c.outCh <- outBytes:
+		c.reportOutbound(&response)
 		return nil
 	case <-c.ctx.Done():
 		return fmt.Errorf("manageserver: connection closed")

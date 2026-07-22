@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"github.com/seanlee0923/manageserver/protocol"
 	"os"
 	"time"
 )
@@ -93,6 +94,17 @@ func WithPingHandler(f func(*Client)) ClientOption {
 func WithErrorHandler(f func(error)) ClientOption {
 	return func(c *Client) error {
 		c.onError = f
+		return nil
+	}
+}
+
+// WithClientOutboundHandler registers an observability hook invoked after a
+// protocol message is handed to the client's write queue. It covers requests,
+// notifications and handler responses, but not WebSocket control frames such
+// as ping/pong. The hook runs synchronously and should return quickly.
+func WithClientOutboundHandler(f func(*protocol.Message)) ClientOption {
+	return func(c *Client) error {
+		c.onOutbound = f
 		return nil
 	}
 }

@@ -175,6 +175,68 @@ func TestRoundTrip(t *testing.T) {
 	}
 }
 
+func TestClientOutboundHandlerObservesRequestsNotifiesAndResponses(t *testing.T) {
+	srv, addr := startServer(t)
+	srv.On("ClientRequest", func(_ *manageserver.Session, _ *protocol.Message) any {
+		return protocol.StatusResp{Ok: true}
+	})
+
+	outbound := make(chan protocol.Message, 3)
+	c, err := manageserver.NewClient(
+		manageserver.WithID("outbound-client"),
+		manageserver.WithClientOutboundHandler(func(message *protocol.Message) {
+			outbound <- *message
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.On("ServerRequest", func(_ *manageserver.Client, _ *protocol.Message) any {
+		return protocol.StatusResp{Ok: true}
+	})
+	go func() { _ = c.Start(addr, "/ws/") }()
+	waitForSession(t, srv, "outbound-client")
+
+	if _, err := c.Send("ClientRequest", struct{}{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Notify("ClientNotify", struct{}{}); err != nil {
+		t.Fatal(err)
+	}
+	sess, ok := srv.Get("outbound-client")
+	if !ok {
+		t.Fatal("client session not found")
+	}
+	if _, err := sess.Send("ServerRequest", struct{}{}); err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[string]protocol.MessageType{
+		"ClientRequest": protocol.Req,
+		"ClientNotify":  protocol.Notify,
+		"ServerRequest": protocol.Resp,
+	}
+	for range want {
+		select {
+		case message := <-outbound:
+			messageType, exists := want[message.Action]
+			if !exists {
+				t.Fatalf("unexpected outbound action %q", message.Action)
+			}
+			if message.Type != messageType {
+				t.Fatalf("outbound %s type = %v, want %v", message.Action, message.Type, messageType)
+			}
+			if message.Id == "" {
+				t.Fatalf("outbound %s has empty message id", message.Action)
+			}
+			delete(want, message.Action)
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for outbound messages; missing=%v", want)
+		}
+	}
+	_ = c.Close()
+}
+
 func requireRemoteProtocolError(t *testing.T, err error, code string) {
 	t.Helper()
 	var protocolErr *manageserver.RemoteProtocolError
