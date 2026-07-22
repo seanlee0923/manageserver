@@ -35,6 +35,7 @@ type TickerConfigReq struct {
 }
 
 type MessageTriggerReq struct {
-	MsgType  string `json:"msg_type"`
-	MinAfter int    `json:"min_after"`
+	CommandId string `json:"command_id"`
+	MsgType   string `json:"msg_type"`
+	MinAfter  int    `json:"min_after"`
 }

@@ -47,8 +47,8 @@ func TestWireDTOContracts(t *testing.T) {
 		},
 		{
 			name:  "trigger",
-			value: MessageTriggerReq{MsgType: "PcStatus", MinAfter: 5},
-			want:  `{"msg_type":"PcStatus","min_after":5}`,
+			value: MessageTriggerReq{CommandId: "cmd-1", MsgType: "PcStatus", MinAfter: 5},
+			want:  `{"command_id":"cmd-1","msg_type":"PcStatus","min_after":5}`,
 		},
 		{
 			name:  "terminal open",
