@@ -56,6 +56,7 @@ type ChargePointBootSummaryReq struct {
 type ChargePointDetail struct {
 	Serial          string `json:"s"`
 	FirmwareVersion string `json:"fver"`
+	Kwh             string `json:"kwh"`
 	IpAddr          string `json:"ip_addr"`
 	ChargeAreaName  string `json:"ca_name"`
 	ChargePointName string `json:"cp_name"`
